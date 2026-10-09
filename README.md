@@ -1,2 +1,5 @@
 # agent-from-scratch
-From-scratch AI Agent framework with ReAct loop, tool registry, RAG pipeline, and streaming API — built for engineering depth and interview readiness.
+
+Building an AI Agent from scratch — no frameworks, starting with the ReAct loop.
+
+手写 AI Agent，不依赖框架，从 ReAct 循环开始。
