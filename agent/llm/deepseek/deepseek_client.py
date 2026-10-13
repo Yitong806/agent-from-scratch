@@ -1,4 +1,5 @@
 import json
+import typing
 
 import requests
 
@@ -25,57 +26,71 @@ class DeepseekClient:
             'content': self.system_prompt,
         }]
 
-
-    def _headers(self):
+    def _headers(self, stream: bool = False):
         return {
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
+            'Accept': 'text/event-stream' if stream else 'application/json',
             'Authorization': f'Bearer {self.api_key}'
         }
 
-
-    def chat(self, human_message: str,
-             thinking: str="disabled",
-             reasoning_effort: str="none") -> str:
-        target_messages: list[dict] = self.history.copy()
-        target_messages.append({
-            'role': Role.USER,
-            'content': human_message
-        })
-        payload = json.dumps({
+    def _build_payload(self, target_messages: list[dict], stream: bool = False) -> dict:
+        return {
             "messages": target_messages,
             "model": self.model_name,
             "thinking": {
-                "type": thinking,
+                "type": "disabled",
             },
-            "reasoning_effort": reasoning_effort,
+            "reasoning_effort": "none",
             "max_tokens": self.max_tokens,
             "response_format": {
                 "type": "text"
             },
             "stop": None,
-            "stream": False,
+            "stream": stream,
             "stream_options": None,
             "temperature": 1,
             "top_p": 1,
             "tools": None,
             "tool_choice": "none",
             "logprobs": False,
-            "top_logprobs": None
-        })
-        headers = self._headers()
+            "top_logprobs": None,
+        }
 
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, data=payload)
+    def chat(self, human_message: str, thinking: str = "disabled", reasoning_effort: str = "none") -> str:
+        target_messages = self.history.copy()
+        target_messages.append({'role': Role.USER, 'content': human_message})
+        payload = self._build_payload(target_messages, stream=False)
+        headers = self._headers(stream=False)
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload)
         if response.status_code == 200:
             json_response = json.loads(response.text)
             llm_response_text = json_response['choices'][0]['message']['content']
-            self.history.append({
-                'role': Role.USER,
-                'content': human_message
-            })
-            self.history.append({
-                'role': Role.ASSISTANT,
-                'content': llm_response_text
-            })
-            return response.text
+            self.history.append({'role': Role.USER, 'content': human_message})
+            self.history.append({'role': Role.ASSISTANT, 'content': llm_response_text})
+            return llm_response_text
         raise deepseek_exception(response.status_code, response.text)
+
+    def stream(self, human_message: str, thinking: str = "disabled", reasoning_effort: str = "none") -> \
+    typing.Generator[str, None, None]:
+        target_messages = self.history.copy()
+        target_messages.append({'role': Role.USER, 'content': human_message})
+        payload = self._build_payload(target_messages, stream=True)
+        headers = self._headers(stream=True)
+        with requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, stream=True, timeout=30) as response:
+            if response.status_code != 200:
+                raise deepseek_exception(response.status_code, response.text)
+            full_content = []
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if data_str == "[DONE]":
+                    break
+                chunk = json.loads(data_str)
+                content = chunk["choices"][0]["delta"].get("content")
+                if content:
+                    full_content.append(content)
+                    yield content
+        complete_response = "".join(full_content)
+        self.history.append({'role': Role.USER, 'content': human_message})
+        self.history.append({'role': Role.ASSISTANT, 'content': complete_response})
